@@ -24,7 +24,20 @@ class PCLProcessor:
     self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # load model and image preprocessing
-    self.model, self.preprocess = clip.load("ViT-B/32", device=self.device, jit=False)
+    self.model, self.preprocess = clip.load("ViT-L/14@336px", device=self.device, jit=False)
+    print(clip.available_models())
+  
+  def calc_box_area(self, box):
+    return max(0, box[1][0] - box[0][0] + 1) * max(0, box[1][1] - box[0][1] + 1)
+  
+  def calc_int_area(self, boxA, boxB):
+    # determine the (x, y)-coordinates of the intersection rectangle
+    xA = max(boxA[0][0], boxB[0][0])
+    yA = max(boxA[0][1], boxB[0][1])
+    xB = min(boxA[1][0], boxB[1][0])
+    yB = min(boxA[1][1], boxB[1][1])
+    # compute the area of intersection rectangle
+    return self.calc_box_area([(xA, yA), (xB, yB)])
   
   def segment_pcl(self, visualize=False, verbose=False):
     msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2)
@@ -34,13 +47,18 @@ class PCLProcessor:
     dist_mat = np_points.T
     dist_mat = transform_dist_mat(dist_mat, 'camera_color_optical_frame', 'aruco_base')
     np_points = dist_mat.T
-    limits = {'x_min': -0.6359999999999999, 'x_max': 0.2829999999999999, 'y_min': -2.0, 'y_max': 0.383, 'z_min': 0.41999999999999993, 'z_max': 1.0190000000000001}
+    # limits = {'x_min': -0.636, 'x_max': 0.283,
+    #           'y_min': -2.0, 'y_max': 0.383,
+    #           'z_min': 0.42, 'z_max': 1.019}
+    limits = {'x_min': -0.636, 'x_max': 0.358,
+              'y_min': -0.061, 'y_max': 0.292,
+              'z_min': 0.471, 'z_max': 2.0}
     x_cond = np.logical_and(np_points[:, 0] >= limits["x_min"], np_points[:, 0] <= limits["x_max"])
     y_cond = np.logical_and(np_points[:, 1] >= limits["y_min"], np_points[:, 1] <= limits["y_max"])
     z_cond = np.logical_and(np_points[:, 2] >= limits["z_min"], np_points[:, 2] <= limits["z_max"])
     filtered_np_points = np.where(np.logical_and(x_cond, np.logical_and(y_cond, z_cond)))
     pcd.points = o3d.utility.Vector3dVector(np_points[filtered_np_points])
-    plane_model, inliers = pcd.segment_plane(distance_threshold=0.016, ransac_n=3, num_iterations=1000)
+    plane_model, inliers = pcd.segment_plane(distance_threshold=0.017, ransac_n=3, num_iterations=1000)
     # print(plane_model)
     plane_cloud = pcd.select_by_index(inliers)
     # plane_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=16), fast_normal_computation=True)
@@ -50,7 +68,7 @@ class PCLProcessor:
     # objects_cloud = pcd
     if visualize:
       o3d.visualization.draw_geometries([objects_cloud])
-    labels = np.array(objects_cloud.cluster_dbscan(eps=0.01, min_points=10))
+    labels = np.array(objects_cloud.cluster_dbscan(eps=0.007, min_points=25))
     max_label = labels.max()
     colors = plt.get_cmap("tab20")(labels / (max_label 
     if max_label > 0 else 1))
@@ -86,14 +104,13 @@ class PCLProcessor:
       extrinsics = self.rs_helpers.get_depth_to_color_extrinsics()
       extrinsics = None
       pixels = self.rs_helpers.calculate_pixels_from_points(points, intrinsics, cam_to_cam_extrinsics=extrinsics)
-      # print(pixels)
       # pixels = np.round(pixels).astype(np.uint16)
       pixels = self.rs_helpers.adjust_pixels_to_boundary(
       pixels, (image_np.shape[1], image_np.shape[0]))
-      rh = 0
+      rh = 3
       rv_up = 20
-      rv_down = 10
-      miny, minx = min(pixels[1])-rv_up, min(pixels[0])-rh
+      # rv_down = 13
+      # miny, minx = min(pixels[1])-rv_up, min(pixels[0])-rh
       maxy, maxx = max(pixels[1])+rv_down, max(pixels[0])+rh
       boundary_pixels = self.rs_helpers.adjust_pixels_to_boundary(
       np.array([[minx, maxx],[miny, maxy]]), (image_np.shape[1], image_np.shape[0]))
@@ -107,9 +124,6 @@ class PCLProcessor:
       object_points_wrt_camera.append(points)
       object_pixels.append(pixels)
       if visualize:
-        # print(objects_boundaries[-1])
-        # print(image_np.shape)
-        # print(minx, miny, maxx, maxy)
         cv2.imshow("image", image_np[miny:maxy, minx:maxx])
         val = cv2.waitKey(0) & 0xFF
     return objects_boundaries, image_np, object_pixels, object_points_wrt_camera, object_points_wrt_aruco, object_centroids_wrt_aruco
@@ -134,6 +148,7 @@ class PCLProcessor:
       #     text_features = model.encode_text(text)
       detected_objects = []
       new_object_centroids = []
+      objects_roi_by_class = {i:[] for i in object_names if i != "unknown"}
       for i, object_image in enumerate(objects_images):
           # pre-process image
           prepro_image = self.preprocess(object_image).unsqueeze(0).to(self.device)
@@ -149,19 +164,41 @@ class PCLProcessor:
           if verbose:
             print("object_index =", obj_idx)
             print("probabilities = ", probs[0])
-          if (probs[0][obj_idx] > 0.7):
+          if (probs[0][obj_idx] > 0.6):
               if verbose:
-               print("Object {} is {}".format(i, new_object_names[obj_idx]))
+                print("Object {} is {}".format(i, new_object_names[obj_idx]))
               detected_objects.append({'name':new_object_names[obj_idx], 'roi':objects_on_table_roi[i], 'idx':i})
               new_object_centroids.append(object_centroids_wrt_aruco[i])
+              if new_object_names[obj_idx] != "unknown":
+                objects_roi_by_class[new_object_names[obj_idx]].append((i, probs[0][obj_idx]))
+      indices_to_remove = []
+      for _, class_data in objects_roi_by_class.items():
+          class_indices = [i[0] for i in class_data]
+          class_probs = [i[1] for i in class_data]
+          class_rois = [objects_on_table_roi[i] for i in class_indices]
+          if len(class_rois) > 1:
+              areas = list(map(self.calc_box_area, class_rois))
+              for i in range(len(class_rois)):
+                  for j in range(i+1, len(class_rois)):
+                      inter_area = self.calc_int_area(class_rois[i], class_rois[j])
+                      if inter_area/min(areas[i], areas[j]) >= 0.3:
+                          indices_to_remove = [class_indices[i] if class_probs[i] < class_probs[j] else class_indices[j]]
+                          
+      copy_of_detected_objects = deepcopy(detected_objects)
+      for detected_object in copy_of_detected_objects:
+          if detected_object['idx'] in indices_to_remove:
+              detected_objects.remove(detected_object)
       
       if visualize_result:
-        for detected_object in detected_objects:
+        for detected_object in copy_of_detected_objects:
             # print("Object {} is {}".format(detected_object['idx'], detected_object['name']))
             if detected_object is not None:
-                cv2.rectangle(image_np, (detected_object['roi'][0][0], detected_object['roi'][0][1]), (detected_object['roi'][1][0], detected_object['roi'][1][1]), (0, 255, 0), 2)
-                cv2.putText(image_np, detected_object['name'], (detected_object['roi'][0][0], detected_object['roi'][0][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                c  = (0, 0, 255) if detected_object['idx'] in indices_to_remove else (0, 255, 0)
+                cv2.rectangle(image_np, (detected_object['roi'][0][0], detected_object['roi'][0][1]), (detected_object['roi'][1][0], detected_object['roi'][1][1]), c, 2)
+                cv2.putText(image_np, detected_object['name'], (detected_object['roi'][0][0], detected_object['roi'][0][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 2)
                 # image_np[object_pixels[detected_object['idx']][1], object_pixels[detected_object['idx']][0]] = [255, 0, 0]
+        # if len(indices_to_remove) > 0:
+            # cv2.imwrite("image_with_removed_objects.png", image_np)
         cv2.imshow("image", image_np)
         cv2.waitKey(10)
       return detected_objects, object_points_wrt_aruco, new_object_centroids
@@ -176,4 +213,4 @@ if __name__ == '__main__':
     except rospy.ROSInterruptException:
       print("Shutting down")
       cv2.destroyAllWindows()
-      break
+      break 
