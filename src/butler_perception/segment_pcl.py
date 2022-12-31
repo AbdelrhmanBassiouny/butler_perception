@@ -40,7 +40,7 @@ class PCLProcessor:
     z_cond = np.logical_and(np_points[:, 2] >= limits["z_min"], np_points[:, 2] <= limits["z_max"])
     filtered_np_points = np.where(np.logical_and(x_cond, np.logical_and(y_cond, z_cond)))
     pcd.points = o3d.utility.Vector3dVector(np_points[filtered_np_points])
-    plane_model, inliers = pcd.segment_plane(distance_threshold=0.015, ransac_n=3, num_iterations=1000)
+    plane_model, inliers = pcd.segment_plane(distance_threshold=0.016, ransac_n=3, num_iterations=1000)
     # print(plane_model)
     plane_cloud = pcd.select_by_index(inliers)
     # plane_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=16), fast_normal_computation=True)
@@ -75,11 +75,11 @@ class PCLProcessor:
       object_centroids_wrt_aruco.append(center)
       if verbose:
         print("center = ", center)
-      if visualize:
-        new_cluster = deepcopy(cluster)
-        new_cluster.points.extend([center])
-        new_cluster.colors.extend([[0, 0, 1]])
-        o3d.visualization.draw_geometries([new_cluster])
+      # if visualize:
+      #   new_cluster = deepcopy(cluster)
+      #   new_cluster.points.extend([center])
+      #   new_cluster.colors.extend([[0, 0, 1]])
+      #   o3d.visualization.draw_geometries([new_cluster])
       points_wrt_aruco = np.asarray(cluster.points).T
       points = transform_dist_mat(points_wrt_aruco, 'aruco_base', 'camera_color_optical_frame')
       intrinsics = self.rs_helpers.get_intrinsics(self.rs_helpers.color_intrin_topic)
@@ -172,7 +172,7 @@ if __name__ == '__main__':
   rospy.init_node('segment_pcl', anonymous=True)
   while not rospy.is_shutdown():
     try:
-      pcl_processor.find_object(object_names=["cup", "bottle", "other"], verbose=True, visualize_steps=True)
+      pcl_processor.find_object(object_names=["cup", "bottle", "tea packet", "other"], verbose=True, visualize_steps=False)
     except rospy.ROSInterruptException:
       print("Shutting down")
       cv2.destroyAllWindows()
