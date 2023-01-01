@@ -109,8 +109,8 @@ class PCLProcessor:
       pixels, (image_np.shape[1], image_np.shape[0]))
       rh = 3
       rv_up = 20
-      # rv_down = 13
-      # miny, minx = min(pixels[1])-rv_up, min(pixels[0])-rh
+      rv_down = 13
+      miny, minx = min(pixels[1])-rv_up, min(pixels[0])-rh
       maxy, maxx = max(pixels[1])+rv_down, max(pixels[0])+rh
       boundary_pixels = self.rs_helpers.adjust_pixels_to_boundary(
       np.array([[minx, maxx],[miny, maxy]]), (image_np.shape[1], image_np.shape[0]))
