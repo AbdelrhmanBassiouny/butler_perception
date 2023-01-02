@@ -15,17 +15,21 @@ from ros_numpy import numpify
 import clip
 import torch
 from copy import deepcopy
+from std_msgs.msg import String
 
 
 class PCLProcessor:
-  def __init__(self):
-    # rospy.Subscriber("/camera/depth/color/points", PointCloud2, self.pcl_callback, queue_size=1)
+  def __init__(self, subscribe=False):
     self.rs_helpers = RealsenseHelpers()
     self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # load model and image preprocessing
     self.model, self.preprocess = clip.load("ViT-L/14@336px", device=self.device, jit=False)
-    print(clip.available_models())
+    # print(clip.available_models())
+    if subscribe:
+      rospy.init_node('segment_pcl', anonymous=True)
+      # rospy.Subscriber("/camera/depth/color/points", PointCloud2, self.pcl_callback, queue_size=1)
+      rospy.Subscriber("/find_objects", String, self.find_objects_cb, queue_size=1)
   
   def calc_box_area(self, box):
     return max(0, box[1][0] - box[0][0] + 1) * max(0, box[1][1] - box[0][1] + 1)
@@ -39,8 +43,19 @@ class PCLProcessor:
     # compute the area of intersection rectangle
     return self.calc_box_area([(xA, yA), (xB, yB)])
   
-  def segment_pcl(self, visualize=False, verbose=False):
-    msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2)
+  def find_objects_cb(self, msg):
+    """Find objects in the scene and publish their centroids
+    centroids are published as a string of floats in the form:
+    "x1 y1 z1 x2 y2 z2 x3 y3 z3"
+    """
+    detected_objects, object_points_wrt_aruco, new_object_centroids = self.find_object(msg.data)
+    string_centroids = ""
+    for centroid in new_object_centroids:
+      string_centroids += f"{centroid[0]} {centroid[1]} {centroid[2]} "
+  
+  def segment_pcl(self, visualize=False, verbose=False, msg=None):
+    if msg is None:
+      msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2)
     rospy.loginfo("Received PointCloud2 message")
     pcd = orh.rospc_to_o3dpc(msg) 
     np_points = np.asarray(pcd.points)
@@ -66,6 +81,8 @@ class PCLProcessor:
     plane_cloud.paint_uniform_color([1, 0, 0])
     # outlier_cloud.paint_uniform_color([0.6, 0.6, 0.6])
     # objects_cloud = pcd
+    # objects_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=16), fast_normal_computation=True)
+    # objects_cloud.orient_normals_towards_camera_location(camera_location=np.array([0, 0, 0]))
     if visualize:
       o3d.visualization.draw_geometries([objects_cloud])
     labels = np.array(objects_cloud.cluster_dbscan(eps=0.007, min_points=25))
@@ -107,9 +124,9 @@ class PCLProcessor:
       # pixels = np.round(pixels).astype(np.uint16)
       pixels = self.rs_helpers.adjust_pixels_to_boundary(
       pixels, (image_np.shape[1], image_np.shape[0]))
-      rh = 3
-      rv_up = 20
-      rv_down = 13
+      rh = 8
+      rv_up = 25
+      rv_down = 18
       miny, minx = min(pixels[1])-rv_up, min(pixels[0])-rh
       maxy, maxx = max(pixels[1])+rv_down, max(pixels[0])+rh
       boundary_pixels = self.rs_helpers.adjust_pixels_to_boundary(
@@ -139,7 +156,13 @@ class PCLProcessor:
           # cv2.waitKey(0)
           objects_images.append(obj_image)
       new_object_names = deepcopy(object_names)
-      new_object_names.append("unknown")
+      execluded_object_names = []
+      # execluded_object_names.extend([f"not a {n}" for n in object_names])
+      # execluded_object_names.append("other")
+      # execluded_object_names.append("unknown")
+      # execluded_object_names.append("something else")
+      execluded_object_names.append("object")
+      new_object_names.extend(execluded_object_names)
       text_snippets = ["a photo of a {}".format(name) for name in new_object_names]
       # pre-process text
       text = clip.tokenize(text_snippets).to(self.device)
@@ -148,7 +171,7 @@ class PCLProcessor:
       #     text_features = model.encode_text(text)
       detected_objects = []
       new_object_centroids = []
-      objects_roi_by_class = {i:[] for i in object_names if i != "unknown"}
+      objects_roi_by_class = {i:[] for i in object_names}
       for i, object_image in enumerate(objects_images):
           # pre-process image
           prepro_image = self.preprocess(object_image).unsqueeze(0).to(self.device)
@@ -164,13 +187,16 @@ class PCLProcessor:
           if verbose:
             print("object_index =", obj_idx)
             print("probabilities = ", probs[0])
-          if (probs[0][obj_idx] > 0.6):
+          if (probs[0][obj_idx] > 0.8):
+              name = new_object_names[obj_idx]
+              if name in execluded_object_names:
+                continue
               if verbose:
-                print("Object {} is {}".format(i, new_object_names[obj_idx]))
-              detected_objects.append({'name':new_object_names[obj_idx], 'roi':objects_on_table_roi[i], 'idx':i})
+                print("Object {} is {}".format(i, name))
+              detected_objects.append({'name':name, 'roi':objects_on_table_roi[i], 'idx':i})
               new_object_centroids.append(object_centroids_wrt_aruco[i])
-              if new_object_names[obj_idx] != "unknown":
-                objects_roi_by_class[new_object_names[obj_idx]].append((i, probs[0][obj_idx]))
+              if name not in execluded_object_names:
+                objects_roi_by_class[name].append((i, probs[0][obj_idx]))
       indices_to_remove = []
       for _, class_data in objects_roi_by_class.items():
           class_indices = [i[0] for i in class_data]
@@ -202,14 +228,42 @@ class PCLProcessor:
         cv2.imshow("image", image_np)
         cv2.waitKey(10)
       return detected_objects, object_points_wrt_aruco, new_object_centroids
+  
+  def get_object_location(self, n_trials=5, object_names=["cup", "bottle", "tea packet"], number=False):
+    found = [False for name in object_names]
+    detected_objects_dict = {}
+    for i in range(n_trials):
+        detected_objects, object_points_wrt_aruco, object_centroids_wrt_aruco = self.find_object(object_names=object_names)
+        all_names = [detected_object['name'] for detected_object in detected_objects]
+        found = [False if name not in all_names else True for name in object_names]
+        if all(found):
+            if number:
+                object_numbers = {}
+                for detected_object, center in zip(detected_objects, object_centroids_wrt_aruco):
+                    name = detected_object['name']
+                    if name not in object_numbers.keys():
+                        object_numbers[name] = 0
+                    object_numbers[name] += 1
+                    detected_objects_dict[name + str(object_numbers[name])] = center
+            else:
+                for detected_object, center in zip(detected_objects, object_centroids_wrt_aruco):
+                    detected_objects_dict[detected_object['name']] = center
+            return detected_objects_dict
+    return None
 
 
 if __name__ == '__main__':
-  pcl_processor = PCLProcessor()
+  pcl_processor = PCLProcessor(subscribe=False)
   rospy.init_node('segment_pcl', anonymous=True)
   while not rospy.is_shutdown():
     try:
-      pcl_processor.find_object(object_names=["cup", "bottle", "tea packet", "other"], verbose=True, visualize_steps=False)
+      # obj_names = ["cup", "bottle", "tea packet", "other"]
+      obj_names = ["teapacket"]
+      # obj_names = ["cup"]
+      # obj_names = ["cup", "tea packet"]
+      # not_object_names = [f"something that does not look like a {n}" for n in obj_names]
+      # new_object_names = obj_names + not_object_names + ["other"]
+      pcl_processor.find_object(object_names=obj_names, verbose=True, visualize_steps=False)
     except rospy.ROSInterruptException:
       print("Shutting down")
       cv2.destroyAllWindows()
