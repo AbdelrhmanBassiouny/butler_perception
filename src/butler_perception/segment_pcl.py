@@ -56,8 +56,10 @@ class PCLProcessor:
   def segment_pcl(self, visualize=False, verbose=False, msg=None):
     if msg is None:
       msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2)
+      # msg2 = rospy.wait_for_message("/astra/depth_registered/points", PointCloud2)
     rospy.loginfo("Received PointCloud2 message")
     pcd = orh.rospc_to_o3dpc(msg) 
+    # pcd2 = orh.rospc_to_o3dpc(msg2)
     np_points = np.asarray(pcd.points)
     dist_mat = np_points.T
     dist_mat = transform_dist_mat(dist_mat, 'camera_color_optical_frame', 'aruco_base')
@@ -237,17 +239,18 @@ class PCLProcessor:
         all_names = [detected_object['name'] for detected_object in detected_objects]
         found = [False if name not in all_names else True for name in object_names]
         if all(found):
-            if number:
-                object_numbers = {}
-                for detected_object, center in zip(detected_objects, object_centroids_wrt_aruco):
-                    name = detected_object['name']
-                    if name not in object_numbers.keys():
-                        object_numbers[name] = 0
-                    object_numbers[name] += 1
-                    detected_objects_dict[name + str(object_numbers[name])] = center
-            else:
-                for detected_object, center in zip(detected_objects, object_centroids_wrt_aruco):
-                    detected_objects_dict[detected_object['name']] = center
+            object_numbers = {}
+            new_name = name
+            for detected_object, center in zip(detected_objects, object_centroids_wrt_aruco):
+                name = detected_object['name']
+                if name not in object_numbers.keys():
+                    object_numbers[name] = 0
+                object_numbers[name] += 1
+                if number:
+                    new_name = name + str(object_numbers[name])
+                top_idx = np.argmax(object_points_wrt_aruco[detected_object['idx']][2, :], axis=0)
+                top = object_points_wrt_aruco[detected_object['idx']][:, top_idx].tolist()
+                detected_objects_dict[new_name] = {'center':center, 'top':top}
             return detected_objects_dict
     return None
 

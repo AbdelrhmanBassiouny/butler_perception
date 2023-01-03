@@ -1,0 +1,10 @@
+<launch>
+
+<include file="$(find realsense2_camera)/launch/rs_camera.launch">
+  <arg name="align_depth" value="true" />
+  <arg name="filters" value="pointcloud,temporal" />
+</include>
+<node name="rqt_gui" pkg="rqt_gui" type="rqt_gui" output="screen" />
+<node name="transform_server" pkg="robot_helpers" type="transform_server.py" output="screen" />
+
+</launch>
