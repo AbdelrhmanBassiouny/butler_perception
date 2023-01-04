@@ -53,23 +53,31 @@ class PCLProcessor:
     for centroid in new_object_centroids:
       string_centroids += f"{centroid[0]} {centroid[1]} {centroid[2]} "
   
-  def segment_pcl(self, visualize=False, verbose=False, msg=None):
-    if msg is None:
-      msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2)
+  def get_pcd(self):
+    msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2)
       # msg2 = rospy.wait_for_message("/astra/depth_registered/points", PointCloud2)
     rospy.loginfo("Received PointCloud2 message")
     pcd = orh.rospc_to_o3dpc(msg) 
-    # pcd2 = orh.rospc_to_o3dpc(msg2)
+    return pcd
+  
+  def display_inlier_outlier(self, cloud, ind):
+    inlier_cloud = cloud.select_by_index(ind)
+    outlier_cloud = cloud.select_by_index(ind, invert=True)
+
+    print("Showing outliers (red) and inliers (gray): ")
+    outlier_cloud.paint_uniform_color([1, 0, 0])
+    inlier_cloud.paint_uniform_color([0.8, 0.8, 0.8])
+    o3d.visualization.draw_geometries([inlier_cloud, outlier_cloud],
+                                      zoom=0.3412,
+                                      front=[0.4257, -0.2125, -0.8795],
+                                      lookat=[2.6172, 2.0475, 1.532],
+                                      up=[-0.0694, -0.9768, 0.2024])
+  
+  def constrain_and_segment_plane(self, pcd, limits, visualize=False):
     np_points = np.asarray(pcd.points)
     dist_mat = np_points.T
     dist_mat = transform_dist_mat(dist_mat, 'camera_color_optical_frame', 'aruco_base')
     np_points = dist_mat.T
-    # limits = {'x_min': -0.636, 'x_max': 0.283,
-    #           'y_min': -2.0, 'y_max': 0.383,
-    #           'z_min': 0.42, 'z_max': 1.019}
-    limits = {'x_min': -0.636, 'x_max': 0.358,
-              'y_min': -0.061, 'y_max': 0.292,
-              'z_min': 0.471, 'z_max': 2.0}
     x_cond = np.logical_and(np_points[:, 0] >= limits["x_min"], np_points[:, 0] <= limits["x_max"])
     y_cond = np.logical_and(np_points[:, 1] >= limits["y_min"], np_points[:, 1] <= limits["y_max"])
     z_cond = np.logical_and(np_points[:, 2] >= limits["z_min"], np_points[:, 2] <= limits["z_max"])
@@ -87,6 +95,17 @@ class PCLProcessor:
     # objects_cloud.orient_normals_towards_camera_location(camera_location=np.array([0, 0, 0]))
     if visualize:
       o3d.visualization.draw_geometries([objects_cloud])
+    return objects_cloud, plane_cloud, pcd
+  
+  def segment_pcl(self, visualize=False, verbose=False, msg=None):
+    pcd = self.get_pcd()
+    # limits = {'x_min': -0.636, 'x_max': 0.283,
+    #           'y_min': -2.0, 'y_max': 0.383,
+    #           'z_min': 0.42, 'z_max': 1.019}
+    limits = {'x_min': -0.636, 'x_max': 0.358,
+              'y_min': -0.061, 'y_max': 0.292,
+              'z_min': 0.471, 'z_max': 2.0}
+    objects_cloud, plane_cloud, pcd = self.constrain_and_segment_plane(pcd, limits, visualize=visualize)
     labels = np.array(objects_cloud.cluster_dbscan(eps=0.007, min_points=25))
     max_label = labels.max()
     colors = plt.get_cmap("tab20")(labels / (max_label 
@@ -240,9 +259,9 @@ class PCLProcessor:
         found = [False if name not in all_names else True for name in object_names]
         if all(found):
             object_numbers = {}
-            new_name = name
             for detected_object, center in zip(detected_objects, object_centroids_wrt_aruco):
                 name = detected_object['name']
+                new_name = name
                 if name not in object_numbers.keys():
                     object_numbers[name] = 0
                 object_numbers[name] += 1
