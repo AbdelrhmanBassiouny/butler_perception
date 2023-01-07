@@ -73,15 +73,32 @@ class PCLProcessor:
                                       lookat=[2.6172, 2.0475, 1.532],
                                       up=[-0.0694, -0.9768, 0.2024])
   
+  def transform_pcl_points(self, source_frame='camera_color_optical_frame', target_frame='aruco_base', points=None, pcd=None):
+    if pcd is not None:
+      np_points = np.asarray(pcd.points)
+    elif points is not None:
+      np_points = points
+    else:
+      raise ValueError("Must provide either points or pcd")
+    dist_mat = np_points.T
+    dist_mat = transform_dist_mat(dist_mat, source_frame, target_frame)
+    np_points = dist_mat.T
+    if points is not None:
+      return np_points
+    else:
+      pcd.points = o3d.utility.Vector3dVector(np_points)
+      return pcd
+  
   def constrain_and_segment_plane(self, pcd, limits, visualize=False):
     np_points = np.asarray(pcd.points)
-    dist_mat = np_points.T
-    dist_mat = transform_dist_mat(dist_mat, 'camera_color_optical_frame', 'aruco_base')
-    np_points = dist_mat.T
+    np_points = self.transform_pcl_points(points=np_points)
     x_cond = np.logical_and(np_points[:, 0] >= limits["x_min"], np_points[:, 0] <= limits["x_max"])
     y_cond = np.logical_and(np_points[:, 1] >= limits["y_min"], np_points[:, 1] <= limits["y_max"])
     z_cond = np.logical_and(np_points[:, 2] >= limits["z_min"], np_points[:, 2] <= limits["z_max"])
     filtered_np_points = np.where(np.logical_and(x_cond, np.logical_and(y_cond, z_cond)))
+    print("Number of points in plane: ", filtered_np_points[0].shape[0])
+    if filtered_np_points[0].shape[0] < 10:
+      return None, None
     pcd.points = o3d.utility.Vector3dVector(np_points[filtered_np_points])
     plane_model, inliers = pcd.segment_plane(distance_threshold=0.017, ransac_n=3, num_iterations=1000)
     # print(plane_model)
@@ -208,7 +225,7 @@ class PCLProcessor:
           if verbose:
             print("object_index =", obj_idx)
             print("probabilities = ", probs[0])
-          if (probs[0][obj_idx] > 0.8):
+          if (probs[0][obj_idx] > 0.9):
               name = new_object_names[obj_idx]
               if name in execluded_object_names:
                 continue
@@ -267,9 +284,13 @@ class PCLProcessor:
                 object_numbers[name] += 1
                 if number:
                     new_name = name + str(object_numbers[name])
-                top_idx = np.argmax(object_points_wrt_aruco[detected_object['idx']][2, :], axis=0)
+                # np_points = np.array([object_points_wrt_aruco[detected_object['idx']].T, center])
+                # np_points = self.transform_pcl_points(points=np_points, source_frame="aruco_base", target_frame="base_link").T
+                top_idx = np.argmax(object_points_wrt_aruco[detected_object['idx']][1, :], axis=0)
+                bottom_idx = np.argmin(object_points_wrt_aruco[detected_object['idx']][1, :], axis=0)
                 top = object_points_wrt_aruco[detected_object['idx']][:, top_idx].tolist()
-                detected_objects_dict[new_name] = {'center':center, 'top':top}
+                bottom = object_points_wrt_aruco[detected_object['idx']][:, bottom_idx].tolist()
+                detected_objects_dict[new_name] = {'center':center, 'top':top, 'bottom':bottom}
             return detected_objects_dict
     return None
 
@@ -280,7 +301,8 @@ if __name__ == '__main__':
   while not rospy.is_shutdown():
     try:
       # obj_names = ["cup", "bottle", "tea packet", "other"]
-      obj_names = ["teapacket"]
+      obj_names = ["tea-packet"]
+      obj_names = ["Tea-Packet"]
       # obj_names = ["cup"]
       # obj_names = ["cup", "tea packet"]
       # not_object_names = [f"something that does not look like a {n}" for n in obj_names]
