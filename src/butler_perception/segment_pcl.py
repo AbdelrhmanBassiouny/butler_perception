@@ -16,6 +16,8 @@ import clip
 import torch
 from copy import deepcopy
 from std_msgs.msg import String
+import subprocess
+
 
 
 class PCLProcessor:
@@ -98,7 +100,7 @@ class PCLProcessor:
     filtered_np_points = np.where(np.logical_and(x_cond, np.logical_and(y_cond, z_cond)))
     print("Number of points in plane: ", filtered_np_points[0].shape[0])
     if filtered_np_points[0].shape[0] < 10:
-      return None, None
+      return None, None, None
     pcd.points = o3d.utility.Vector3dVector(np_points[filtered_np_points])
     plane_model, inliers = pcd.segment_plane(distance_threshold=0.017, ransac_n=3, num_iterations=1000)
     # print(plane_model)
@@ -225,7 +227,15 @@ class PCLProcessor:
           if verbose:
             print("object_index =", obj_idx)
             print("probabilities = ", probs[0])
-          if (probs[0][obj_idx] > 0.9):
+          correct = False
+          if obj_idx < len(object_names):
+            if object_names[obj_idx] == "cooking pot with lid":
+              if probs[0][obj_idx] > 0.85:
+                correct = True
+              elif probs[0][obj_idx+1] > 0.25:
+                obj_idx += 1
+                correct = True
+          if (probs[0][obj_idx] > 0.85) or correct:
               name = new_object_names[obj_idx]
               if name in execluded_object_names:
                 continue
@@ -245,7 +255,7 @@ class PCLProcessor:
               for i in range(len(class_rois)):
                   for j in range(i+1, len(class_rois)):
                       inter_area = self.calc_int_area(class_rois[i], class_rois[j])
-                      if inter_area/min(areas[i], areas[j]) >= 0.3:
+                      if inter_area/min(areas[i], areas[j]) >= 0.1:
                           indices_to_remove = [class_indices[i] if class_probs[i] < class_probs[j] else class_indices[j]]
                           
       copy_of_detected_objects = deepcopy(detected_objects)
@@ -263,6 +273,14 @@ class PCLProcessor:
                 # image_np[object_pixels[detected_object['idx']][1], object_pixels[detected_object['idx']][0]] = [255, 0, 0]
         # if len(indices_to_remove) > 0:
             # cv2.imwrite("image_with_removed_objects.png", image_np)
+        # if len(detected_objects) >= len(object_names)-1:
+        #   all_names = [detected_object['name'] for detected_object in detected_objects]
+        #   found = [False if name not in all_names else True for name in object_names]
+        #   if found[0] or found[1] :
+        #     found[0] = True
+        #     found[1] = True
+        #   if all(found):
+        #     cv2.imwrite("image_with_detected_objects.png", image_np)
         cv2.imshow("image", image_np)
         cv2.waitKey(10)
       return detected_objects, object_points_wrt_aruco, new_object_centroids
@@ -303,6 +321,9 @@ if __name__ == '__main__':
       # obj_names = ["cup", "bottle", "tea packet", "other"]
       obj_names = ["tea-packet"]
       obj_names = ["Tea-Packet"]
+      obj_names = ['cooking pot with lid', 'cooking pot without lid', 'carrot', 'tomato', 'cup', 'tea-packet', 'cucumber', 'bottle']
+      obj_names = ['bowl']
+      # obj_names = ['carrot']
       # obj_names = ["cup"]
       # obj_names = ["cup", "tea packet"]
       # not_object_names = [f"something that does not look like a {n}" for n in obj_names]
